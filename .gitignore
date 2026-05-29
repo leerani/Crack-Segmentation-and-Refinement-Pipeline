@@ -1,0 +1,15 @@
+.venv/
+.venv_clean/
+.venv_broken/
+
+__pycache__/
+*.pyc
+
+data/
+outputs/
+checkpoints/
+
+*.pth
+*.onnx
+
+.vscode/
