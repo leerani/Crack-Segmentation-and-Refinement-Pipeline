@@ -29,11 +29,7 @@ def get_component_count(mask, min_area=5):
 
 
 def get_total_crack_length(mask):
-    """
-    skeletonize 없이 간단 버전:
-    crack pixel 수를 길이 proxy로 사용.
-    나중에 skeletonization 붙이면 더 정확해짐.
-    """
+
     return float(np.sum(mask > 0))
 
 
