@@ -4,12 +4,16 @@
 
 __pycache__/
 *.pyc
-
-data/
-outputs/
-checkpoints/
-
 *.pth
 *.onnx
 
-.vscode/data
+data
+data/
+outputs/
+src/.vscode
+experimnets/
+
+.vscode/
+.idea/
+
+.DS_Store

@@ -1,32 +1,37 @@
-# Morphology-aware Crack Segmentation and Structural Analysis Pipeline
+# Lighting-Robust Crack Segmentation with ResNet-34 U-Net and ONNX Runtime
 
 ## 1. Project Overview
 
-This project focuses on building a deep learning-based crack segmentation and structural analysis pipeline using computer vision techniques.
+This project develops a deep learning-based crack segmentation pipeline for detecting thin road and concrete surface cracks under varying lighting conditions.
 
-Instead of performing only binary crack segmentation, the project additionally explores:
+The initial implementation focused on a basic U-Net with CLAHE preprocessing and morphology-based refinement. The project was later redesigned to improve model accuracy, lighting robustness, and evaluation reliability through:
 
-* preprocessing experiments,
-* morphology-based refinement,
-* structural feature extraction,
-* and deployment-oriented inference optimization.
+- Train / Validation / Test separation
+- BCE and Dice combined loss
+- lighting-aware data augmentation
+- ImageNet-pretrained ResNet-34 encoder
+- freeze–unfreeze two-stage fine-tuning
+- validation-based threshold selection
+- morphology ablation experiments
+- ONNX Runtime deployment evaluation
 
-The primary goal was not only improving segmentation accuracy, but also analyzing how preprocessing and post-processing affect segmentation stability in real-world crack images.
+The final objective was to build a segmentation model that maintains stable crack detection performance not only on normal images, but also under low-light and overexposed conditions.
 
 ---
 
 # 2. Problem Definition
 
-Real-world crack segmentation presents several challenges:
+Crack segmentation presents several challenges:
 
-* thin crack structures are easily disconnected,
-* low-contrast cracks are difficult to distinguish from the background,
-* texture noise generates false positives,
-* and aggressive post-processing can unintentionally remove valid crack regions.
+- crack regions are thin and occupy only a small portion of the image,
+- low-light conditions reduce crack visibility,
+- overexposure weakens surface texture and boundaries,
+- background textures can be mistaken for cracks,
+- and excessive post-processing can remove valid thin crack regions.
 
 Therefore, this project focused on:
 
-> improving structural stability of crack segmentation outputs while analyzing preprocessing and refinement trade-offs.
+> improving crack segmentation accuracy while maintaining robustness under significant lighting changes.
 
 ---
 
@@ -34,7 +39,7 @@ Therefore, this project focused on:
 
 ## DeepCrack Dataset
 
-The project was trained and evaluated using the DeepCrack dataset.
+The project used the DeepCrack dataset, which provides surface images and corresponding binary crack masks.
 
 Dataset structure:
 
@@ -46,349 +51,442 @@ DeepCrack/
 └── test_lab
 ```
 
-The dataset contains:
+## Data Split
 
-* crack surface images
-* binary segmentation masks
+The original training set was divided into Train and Validation subsets using a fixed random seed.
 
-for supervised crack segmentation training.
+| Split | Images | Purpose |
+| --- | ---: | --- |
+| Train | 240 | Model training |
+| Validation | 60 | Model and threshold selection |
+| Test | 237 | Final performance evaluation |
+
+The Test set was not used during model selection or threshold tuning.
 
 ---
 
-# 4. Pipeline
+# 4. Final Pipeline
 
 ```text
-Input Image
-→ U-Net Segmentation
-→ Morphology Refinement
-→ Feature Extraction
-→ JSON Output
-→ ONNX Runtime Benchmark
+Input RGB Image
+→ Resize to 256 × 256
+→ ResNet-34 U-Net Segmentation
+→ Sigmoid Probability Map
+→ Threshold 0.55
+→ Binary Crack Mask
+→ ONNX Runtime Inference
 ```
-![Pipeline](assets/pipeline_overview.png)
+
+![Pipeline Overview](assets/pipeline_overview.png)
+
+The final pipeline does not use CLAHE preprocessing or morphology post-processing.
+
+Lighting variation is handled during model training through data augmentation instead of relying on fixed image preprocessing.
+
 ---
 
-# 5. Baseline Segmentation
+# 5. Baseline Model
 
 ## 5.1 Model Architecture
 
-A U-Net based segmentation architecture was implemented as the baseline model.
+A basic U-Net was first used as the baseline semantic segmentation model.
 
 ### Input
 
-* RGB image
-* Resolution: 256 × 256
+- RGB image
+- Resolution: 256 × 256
 
 ### Output
 
-* Binary crack segmentation mask
+- Binary crack segmentation mask
 
-### Training Setup
+### Baseline Training Setup
 
-* Loss: BCEWithLogitsLoss
-* Optimizer: Adam
-* Batch Size: 4
-* Epochs: 5
+- Loss: BCEWithLogitsLoss
+- Optimizer: Adam
+- Batch Size: 4
+- Validation split: fixed 240 / 60 split
+- Best checkpoint selected using Validation Dice
 
----
+## 5.2 Baseline Result
 
-## 5.2 Baseline Observation
+After reorganizing the evaluation process and training the baseline model with a separate Validation set, the model achieved:
 
-The baseline segmentation model successfully learned:
+| Model | Validation Dice | Validation IoU |
+| --- | ---: | ---: |
+| BCE Baseline | 0.7644 | 0.6434 |
 
-* crack continuity,
-* branch-like structures,
-* and thin crack patterns.
-
-However, several issues were observed:
-
-* disconnected crack regions,
-* isolated noise blobs,
-* and unstable low-contrast crack segmentation.
-
-To improve segmentation stability, morphology refinement was introduced.
+This result was used as the reproducible baseline for subsequent loss-function, augmentation, and architecture experiments.
 
 ---
 
-# 6. Morphology-based Refinement
+# 6. BCE and Dice Combined Loss
 
 ## 6.1 Motivation
 
-Morphology refinement was applied to improve:
+Crack pixels occupy a relatively small area compared with background pixels.
 
-* crack continuity,
-* structural consistency,
-* and segmentation stability.
+Using BCE alone can emphasize pixel-wise classification but may not sufficiently optimize the overlap of thin crack structures.
 
-The main objectives were:
+To address this imbalance, the final training objective combined:
 
-* reconnecting broken crack regions,
-* removing isolated noise,
-* and stabilizing segmentation outputs.
+- BCE Loss for pixel-wise classification
+- Dice Loss for foreground overlap optimization
 
----
+## 6.2 Result
 
-## 6.2 Applied Operations
+| Model | Validation Dice | Validation IoU |
+| --- | ---: | ---: |
+| BCE Baseline | 0.7644 | 0.6434 |
+| BCE + Dice | 0.7871 | 0.6668 |
 
-### Morphology Closing
-
-Applied to reconnect disconnected crack structures.
-
-### Connected Component Filtering
-
-Applied to remove small isolated noise regions.
+The combined loss improved both Dice and IoU while preserving thin crack structures more consistently.
 
 ---
 
-## 6.3 Morphology Tuning
-
-Different connected component thresholds were tested.
-
-| Method                   | Dice   | IoU    |
-| ------------------------ | ------ | ------ |
-| Raw + U-Net              | 0.6816 | 0.5598 |
-| Raw + U-Net + Morphology | 0.6827 | 0.5619 |
-
-![Dice IoU Comparison](assets/dice_iou_comparison.png)
-
-### Key Observation
-
-Morphology refinement slightly improved segmentation stability and reduced small noise regions.
-
-However, aggressive threshold settings also removed thin crack structures and reduced recall.
-
-This experiment demonstrated a:
-
-> precision-recall trade-off introduced by morphology refinement.
-
----
-
-# 7. CLAHE Preprocessing Experiment
+# 7. Lighting-aware Data Augmentation
 
 ## 7.1 Motivation
 
-CLAHE preprocessing was tested to improve low-contrast crack visibility.
+The baseline model performed well on normal images but showed a significant performance decrease under severe lighting changes.
 
-Hypothesis:
+In particular, low-light images caused thin crack regions to disappear, while overexposure weakened surface contrast.
 
-> local contrast enhancement could improve crack segmentation performance.
+To improve robustness, the training data was explicitly organized into three lighting conditions:
 
----
+| Training condition | Sampling ratio |
+| --- | ---: |
+| Original image | 40% |
+| Low-light augmentation | 30% |
+| Overexposure augmentation | 30% |
 
-## 7.2 Quantitative Results
+## 7.2 Applied Augmentations
 
-| Method                     | Dice   | IoU    |
-| -------------------------- | ------ | ------ |
-| CLAHE + U-Net              | 0.7084 | 0.5735 |
-| CLAHE + U-Net + Morphology | 0.7111 | 0.5775 |
+### Low-light Augmentation
 
-CLAHE preprocessing improved:
+- brightness scaling
+- gamma adjustment
+- Gaussian noise
 
-* local crack contrast,
-* edge visibility,
-* and overall segmentation metrics.
+### Overexposure Augmentation
 
-Additional morphology refinement further improved:
+- contrast increase
+- positive brightness shift
 
-* small noise reduction,
-* and segmentation consistency.
-
----
-
-## 7.3 Trade-off Analysis
-
-![CLAHE Trade-off](assets/clahe_refinement.png)
-
-Although CLAHE improved average segmentation performance, several trade-offs were observed:
-
-* asphalt texture amplification,
-* background grain enhancement,
-* and thin crack fragmentation in some samples.
-
-This experiment showed that:
-
-> stronger contrast enhancement does not always guarantee stable segmentation outputs.
-
-The project therefore analyzed both:
-
-* quantitative metric improvements,
-* and qualitative structural stability changes.
+The augmentation was applied only to the Train subset. Validation and Test images remained unchanged during model and threshold selection.
 
 ---
 
-# 8. Feature Extraction
+# 8. Lighting Robustness Evaluation
 
-The project extended segmentation outputs beyond binary masks by extracting structural crack information.
+Three models were compared on the same Validation subset using a fixed threshold of 0.50.
 
-## Extracted Features
+| Condition | BCE + Dice | Random Lighting | Balanced Lighting |
+| --- | ---: | ---: | ---: |
+| Original | 0.7862 | **0.7908** | 0.7804 |
+| Low-light 50% | 0.6203 | 0.6928 | **0.7487** |
+| Low-light 35% | 0.3707 | 0.4498 | **0.7193** |
+| Low-light 25% | 0.2794 | 0.1972 | **0.6571** |
+| Severe overexposure | 0.4736 | 0.6159 | **0.6985** |
 
-### Crack Area Ratio
+Although the balanced lighting model showed a small decrease on original Validation images, it maintained significantly higher performance under low-light and overexposed conditions.
 
-Ratio of crack pixels relative to the entire image.
+This demonstrated a trade-off between:
 
-### Connected Component Count
+- maximum performance on normal images
+- and stable performance across changing environments
 
-Number of connected crack structures.
+The balanced lighting model was selected as the final model because robustness was considered more important for practical crack inspection.
 
-### Total Crack Length Proxy
-
-Estimated crack length based on crack pixel accumulation.
-
----
-
-## Example JSON Output
-
-```json
-{
-  "crack_area_ratio": 0.0213,
-  "component_count": 4,
-  "total_crack_length_px_proxy": 1392.0
-}
-```
-
-This stage expanded the project from:
-
-```text
-simple segmentation
-```
-
-into:
-
-```text
-structural crack analysis
-```
+![Lighting Robustness](assets/lighting_robustness.png)
 
 ---
 
-# 9. ONNX Export and Inference Benchmark
+# 9. ResNet-34 U-Net and Two-stage Fine-tuning
 
 ## 9.1 Motivation
 
-The project additionally explored deployment-oriented inference optimization using ONNX Runtime.
+The training set contained only 240 images, which limited the representation capability of a U-Net trained from random initialization.
 
-The trained model was exported to ONNX format and benchmarked for inference latency.
+To improve feature extraction with limited data, the baseline encoder was replaced with an ImageNet-pretrained ResNet-34 encoder.
 
----
+The final model used:
 
-## 9.2 Benchmark Environment
+- ResNet-34 encoder with pretrained ImageNet weights
+- U-Net-style decoder with skip connections
+- BCE and Dice combined loss
+- balanced lighting augmentation
+- two-stage freeze–unfreeze fine-tuning
 
-* ONNX Runtime
-* CPU Inference
-* Input Size: 256 × 256
+## 9.2 Two-stage Training
 
----
+### Stage 1: Frozen Encoder
 
-## 9.3 Benchmark Results
+The pretrained ResNet-34 encoder was frozen while the decoder was trained for 12 epochs.
 
-| Metric          | Result    |
-| --------------- | --------- |
-| Average Latency | 142.80 ms |
-| FPS             | 7.00      |
+| Stage | Best Validation Dice | Best Validation IoU |
+| --- | ---: | ---: |
+| Frozen Encoder | 0.8052 | 0.6835 |
 
-![ONNX Benchmark](assets/onnx_benchmark.png)
+### Stage 2: Full Fine-tuning
 
-Segmentation-based inference required significantly higher computation compared to standard object detection pipelines.
+The encoder was then unfrozen and the complete network was fine-tuned for 30 epochs.
 
-The benchmark confirmed:
+Different learning rates were assigned to the encoder and decoder:
 
-* successful ONNX export,
-* deployment feasibility,
-* and runtime inference analysis.
+- Encoder learning rate: 1e-5
+- Decoder learning rate: 1e-4
 
----
+The best checkpoint was obtained at epoch 24.
 
-# 10. Visualization Analysis
+| Model | Validation Dice | Validation IoU |
+| --- | ---: | ---: |
+| Basic U-Net | 0.7816 | 0.6590 |
+| ResNet-34 U-Net | **0.8259** | **0.7108** |
 
-## Raw Baseline Segmentation
-
-Observed characteristics:
-
-* stable crack continuity,
-* branch structure preservation,
-* and thin crack segmentation capability.
+The pretrained encoder and two-stage fine-tuning improved Validation Dice by 0.0443 and IoU by 0.0518.
 
 ---
 
-## Morphology Refinement
+# 10. Threshold Selection
 
-Observed effects:
+The final threshold was selected using only the Validation subset.
 
-* small noise reduction,
-* improved segmentation consistency,
-* but occasional thin crack removal.
+| Threshold | Dice | IoU |
+| ---: | ---: | ---: |
+| 0.30 | 0.8242 | 0.7084 |
+| 0.40 | 0.8253 | 0.7101 |
+| 0.50 | 0.8259 | 0.7108 |
+| **0.55** | **0.8262** | **0.7112** |
+| 0.60 | 0.8259 | 0.7108 |
+| 0.70 | 0.8252 | 0.7099 |
+| 0.80 | 0.8235 | 0.7076 |
 
----
+The final threshold was fixed at:
 
-## CLAHE Experiment
+```text
+0.55
+```
 
-Observed effects:
-
-* improved crack visibility,
-* stronger edge contrast,
-* but increased texture amplification and occasional segmentation fragmentation.
-
----
-
-# 11. Key Insights
-
-1. CLAHE preprocessing improved overall segmentation performance.
-2. Morphology refinement stabilized segmentation outputs when carefully tuned.
-3. Aggressive refinement reduced thin crack recall.
-4. Preprocessing and post-processing tuning significantly affected segmentation stability.
-5. Pipeline refinement sometimes had greater impact than changing model architecture.
+After threshold selection, no model or threshold settings were changed using the Test results.
 
 ---
 
-# 12. Tech Stack
+# 11. Morphology Post-processing Experiment
+
+## 10.1 Motivation
+
+Morphology post-processing was tested during the basic U-Net development stage to determine whether small noise removal and crack reconnection could improve the prediction masks.
+
+The following methods were compared on the Validation subset:
+
+- no post-processing
+- connected component filtering
+- 3 × 3 morphology closing with connected component filtering
+
+## 10.2 Result
+
+| Method | Validation Dice | Validation IoU |
+| --- | ---: | ---: |
+| No post-processing | 0.7816 | 0.6590 |
+| Remove small components, min area 20 | **0.7822** | 0.6598 |
+| Closing + remove, min area 20 | 0.7820 | **0.6599** |
+
+The maximum improvement was less than 0.001.
+
+Because morphology processing could remove valid short or thin crack regions while providing only a minimal metric gain, it was excluded from both the basic U-Net and ResNet-34 U-Net final pipelines.
+
+This experiment showed that:
+
+> additional post-processing was not necessary once the model itself became sufficiently stable.
+
+---
+
+# 12. Final Test Evaluation
+
+The final ResNet-34 U-Net and threshold 0.55 were evaluated on the untouched Test set.
+
+## Official Test Result
+
+| Model | Dice | IoU |
+| --- | ---: | ---: |
+| Basic U-Net | 0.7743 | 0.6625 |
+| ResNet-34 U-Net | **0.7902** | **0.6749** |
+| Improvement | **+0.0159** | **+0.0124** |
+
+The final model improved both Dice and IoU on 237 unseen Test images.
+
+The Validation Dice was 0.8262 and the Test Dice was 0.7902. Although the Test improvement was smaller than the Validation improvement, the architecture change still produced a measurable gain on unseen data.
+
+![Model Improvement Comparison](assets/model_improvement_comparison.png)
+
+---
+
+# 13. Test-set Lighting Robustness
+
+Lighting robustness was additionally evaluated on the Test set as a reference experiment.
+
+The official Test score remains the result from the original, unmodified Test images.
+
+| Test condition | Dice | IoU | Dice drop |
+| --- | ---: | ---: | ---: |
+| Original | **0.7902** | **0.6749** | 0.0000 |
+| Low-light 50% | 0.7843 | 0.6657 | 0.0059 |
+| Low-light 35% | 0.7843 | 0.6649 | 0.0059 |
+| Low-light 25% | 0.7814 | 0.6606 | 0.0088 |
+| Severe overexposure | 0.7469 | 0.6224 | 0.0434 |
+
+Even when image brightness was reduced to 25%, Dice decreased by only 0.0088 from the original Test result.
+
+The model also maintained Dice 0.7469 under severe overexposure.
+
+---
+
+# 14. ONNX Export and Runtime Evaluation
+
+## 14.1 Motivation
+
+The final model was exported to ONNX to verify:
+
+- output consistency after model conversion
+- CPU inference feasibility
+- runtime performance improvement
+
+## 14.2 Accuracy Preservation
+
+The PyTorch and ONNX models were evaluated on the same 237 Test images.
+
+| Runtime | Dice | IoU |
+| --- | ---: | ---: |
+| PyTorch CPU | 0.7902 | 0.6749 |
+| ONNX Runtime CPU | 0.7902 | 0.6749 |
+
+Additional output comparison:
+
+| Metric | Result |
+| --- | ---: |
+| Dice difference | 0.00000044 |
+| IoU difference | 0.00000063 |
+| Maximum probability difference | 0.00005490 |
+
+The ONNX model preserved the segmentation performance of the original PyTorch model.
+
+## 14.3 CPU Inference Benchmark
+
+Benchmark conditions:
+
+- CPU inference
+- Batch size: 1
+- Input resolution: 256 × 256
+
+| Runtime | Average latency | FPS |
+| --- | ---: | ---: |
+| PyTorch CPU | 72.59 ms | 13.78 |
+| ONNX Runtime CPU | **41.46 ms** | **24.12** |
+
+ONNX Runtime improved CPU inference speed by:
+
+```text
+1.75×
+```
+
+Although the current CPU speed is not sufficient for high-frame-rate real-time video processing, the experiment confirmed successful deployment conversion without accuracy loss.
+
+---
+
+# 15. Visualization Results
+
+## Model Improvement Comparison
+
+```text
+Input Image
+→ Ground Truth
+→ Baseline Prediction
+→ Final Prediction
+```
+
+The final ResNet-34 U-Net improved crack continuity and reduced missing regions compared with the basic U-Net.
+
+![Model Improvement](assets/model_improvement_comparison.png)
+
+## Lighting Robustness
+
+Predictions were compared under:
+
+- original lighting
+- low-light 50%
+- low-light 25%
+- severe overexposure
+
+![Lighting Robustness](assets/lighting_robustness.png)
+
+## Representative Results
+
+The project includes both a high-performing example and a typical prediction example.
+
+![Best Case](assets/best_case.png)
+
+![Typical Case](assets/typical_case.png)
+
+---
+
+# 16. Key Insights
+
+1. A separate Validation subset was necessary for reliable model and threshold selection.
+2. BCE and Dice combined loss improved thin crack overlap compared with BCE alone.
+3. Balanced low-light and overexposure augmentation improved robustness under large lighting changes.
+4. An ImageNet-pretrained ResNet-34 encoder improved feature extraction with only 240 training images.
+5. Freeze–unfreeze two-stage fine-tuning improved Validation Dice from 0.7816 to 0.8262.
+6. Morphology post-processing produced only marginal gains and was excluded from the final pipeline.
+7. The final ResNet-34 U-Net achieved Dice 0.7902 and IoU 0.6749 on 237 Test images.
+8. Low-light 25% Test Dice remained at 0.7814, only 0.0088 below the original Test score.
+9. ONNX Runtime preserved segmentation accuracy while improving CPU inference speed by 1.75×.
+
+---
+
+# 17. Tech Stack
 
 ## Deep Learning
 
-* PyTorch
-* U-Net
-* ONNX Runtime
+- Python
+- PyTorch
+- U-Net
+- ResNet-34
+- Transfer Learning
+- BCE Loss
+- Dice Loss
 
 ## Computer Vision
 
-* OpenCV
-* CLAHE
-* Morphology Operations
-* Connected Component Analysis
+- OpenCV
+- NumPy
+- Lighting augmentation
+- Connected component analysis
+- Morphology ablation
 
-## Utilities
+## Deployment and Evaluation
 
-* NumPy
-* Matplotlib
-* JSON Export
-
----
-
-# 13. Future Work
-
-Potential future improvements include:
-
-* skeletonization-based crack length estimation,
-* crack width estimation,
-* lightweight segmentation backbones,
-* GPU inference benchmarking,
-* quantization optimization,
-* and deployment optimization.
+- ONNX
+- ONNX Runtime
+- Matplotlib
+- CSV / JSON result export
 
 ---
 
-## Final Segmentation Result
+# 18. Conclusion
 
-![Final Result](assets/final_segmentation_result.png)
+This project improved an initial U-Net crack segmentation model by redesigning both the training process and evaluation methodology.
 
-# 14. Conclusion
+The final ResNet-34 U-Net pipeline achieved:
 
-This project implemented a complete crack segmentation and structural analysis pipeline including:
+- Validation Dice 0.8262 and IoU 0.7112
+- Test Dice 0.7902 and IoU 0.6749 on 237 images
+- Test Dice 0.7814 under low-light 25%
+- Test Dice 0.7469 under severe overexposure
+- identical PyTorch and ONNX segmentation accuracy
+- CPU inference speed improvement from 72.59 ms to 41.46 ms
+- 1.75× faster CPU inference with ONNX Runtime
 
-* deep learning-based segmentation,
-* preprocessing analysis,
-* morphology refinement,
-* structural feature extraction,
-* and ONNX deployment optimization.
+The main result of the project was not simply adding preprocessing or post-processing operations, but improving the model itself through:
 
-The project demonstrated that:
-
-> preprocessing and post-processing refinement can significantly affect segmentation structural stability, sometimes more than changing the model architecture itself.
+> reliable validation, loss-function redesign, lighting-aware augmentation, pretrained feature extraction, two-stage fine-tuning, and deployment-oriented evaluation.
