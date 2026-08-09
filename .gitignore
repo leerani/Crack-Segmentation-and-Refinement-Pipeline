@@ -17,3 +17,6 @@ experimnets/
 .idea/
 
 .DS_Store
+
+mlflow.db
+mlruns/
